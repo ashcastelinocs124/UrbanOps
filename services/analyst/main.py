@@ -9,7 +9,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 
 from config import (
-    ANTHROPIC_API_KEY,
+    OPENAI_API_KEY,
     MIN_SEVERITY,
     MODEL,
     REDIS_URL,
@@ -43,7 +43,7 @@ EVENTS_CHANNEL = "city.events"
 RECS_CHANNEL = "city.recommendations"
 
 redis_client: aioredis.Redis | None = None
-anthropic_client = None  # type: ignore[assignment]
+openai_client = None  # type: ignore[assignment]
 
 # Rolling context windows so the LLM has recent situational awareness.
 recent_traffic: dict | None = None
@@ -59,7 +59,7 @@ def severity_meets_threshold(severity: str) -> bool:
 
 
 def build_user_prompt(incident: dict, context: dict) -> str:
-    """Build the per-incident user message sent to Claude."""
+    """Build the per-incident user message sent to the LLM."""
     parts = [
         "NEW INCIDENT:",
         json.dumps(incident, indent=2, default=str),
@@ -74,24 +74,26 @@ def build_user_prompt(incident: dict, context: dict) -> str:
 
 
 def analyze_incident_sync(incident: dict, context: dict) -> dict | None:
-    """Call Claude synchronously (designed to run in a thread via asyncio.to_thread)."""
-    if anthropic_client is None:
-        logger.warning("Anthropic client not configured; skipping analysis")
+    """Call OpenAI synchronously (designed to run in a thread via asyncio.to_thread)."""
+    if openai_client is None:
+        logger.warning("OpenAI client not configured; skipping analysis")
         return None
 
     user_prompt = build_user_prompt(incident, context)
 
     try:
-        response = anthropic_client.messages.create(
+        response = openai_client.chat.completions.create(
             model=MODEL,
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
         )
-        raw = response.content[0].text
+        raw = response.choices[0].message.content
         data = json.loads(raw)
     except Exception:
-        logger.exception("Claude API call or JSON parse failed")
+        logger.exception("OpenAI API call or JSON parse failed")
         return None
 
     # Validate and build the recommendation event.
@@ -187,17 +189,17 @@ async def incident_listener():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, anthropic_client
+    global redis_client, openai_client
 
     redis_client = aioredis.from_url(REDIS_URL)
 
-    if ANTHROPIC_API_KEY:
-        import anthropic
+    if OPENAI_API_KEY:
+        from openai import OpenAI
 
-        anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        logger.info("Anthropic client initialised (model=%s)", MODEL)
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        logger.info("OpenAI client initialised (model=%s)", MODEL)
     else:
-        logger.warning("ANTHROPIC_API_KEY not set; LLM analysis disabled")
+        logger.warning("OPENAI_API_KEY not set; LLM analysis disabled")
 
     listener_task = asyncio.create_task(incident_listener())
     yield
@@ -214,5 +216,5 @@ async def health():
     return {
         "service": "analyst",
         "status": "ok",
-        "llm_configured": anthropic_client is not None,
+        "llm_configured": openai_client is not None,
     }
