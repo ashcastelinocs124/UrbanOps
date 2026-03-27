@@ -4,4 +4,5 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 EXPOSE 3000
-CMD ["npm", "run", "dev"]
+ENV HOSTNAME=0.0.0.0
+CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0"]
