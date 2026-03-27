@@ -44,6 +44,21 @@ export default function Dashboard() {
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative">
           <Map state={state} layers={layers} onIncidentClick={setSelectedIncident} />
+
+          {!connected && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#0a0e17]/80 backdrop-blur-sm">
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative h-10 w-10">
+                  <span className="absolute inset-0 rounded-full border-2 border-blue-500/30" />
+                  <span className="absolute inset-0 rounded-full border-2 border-t-blue-400 animate-spin" />
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-medium text-slate-200">Connecting to UrbanOps</p>
+                  <p className="text-xs text-slate-500 mt-1">Waiting for data stream...</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <aside className="w-80 flex flex-col bg-[#111827] border-l border-slate-700/50">

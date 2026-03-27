@@ -15,22 +15,6 @@ import {
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
-// Inject the pulse animation globally once
-if (typeof document !== "undefined") {
-  const styleId = "urbanops-pulse-style";
-  if (!document.getElementById(styleId)) {
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-      @keyframes pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.7; transform: scale(1.3); }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-}
-
 export interface MapProps {
   state: CityState;
   layers: {
