@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
-import type { CityState, IncidentEvent, TrafficSegment } from "@/lib/types";
+import type { CityState, IncidentEvent, TrafficSegment, ActivePlan } from "@/lib/types";
 import {
   CHICAGO_CENTER,
   INITIAL_ZOOM,
@@ -12,6 +12,7 @@ import {
   SEVERITY_SIZES,
   TRANSIT_COLORS,
 } from "@/lib/mapStyles";
+import { findRoadCoords } from "@/lib/chicagoRoads";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -23,6 +24,7 @@ export interface MapProps {
     incidents: boolean;
     weather: boolean;
   };
+  activePlan?: ActivePlan | null;
   onIncidentClick?: (incident: IncidentEvent) => void;
 }
 
@@ -88,7 +90,7 @@ function createTransitElement(mode: string, status: string): HTMLDivElement {
   return el;
 }
 
-export default function Map({ state, layers, onIncidentClick }: MapProps) {
+export default function Map({ state, layers, activePlan, onIncidentClick }: MapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const mapReady = useRef(false);
@@ -152,6 +154,66 @@ export default function Map({ state, layers, onIncidentClick }: MapProps) {
         layout: {
           "line-cap": "round",
           "line-join": "round",
+        },
+      });
+
+      // Plan overlay sources + layers
+      map.addSource("plan-closures", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "plan-closures-layer",
+        type: "line",
+        source: "plan-closures",
+        paint: {
+          "line-color": "#ff3b4f",
+          "line-width": 6,
+          "line-opacity": 0.8,
+          "line-dasharray": [2, 3],
+        },
+        layout: { "line-cap": "round" },
+      });
+
+      map.addSource("plan-reroutes", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "plan-reroutes-layer",
+        type: "line",
+        source: "plan-reroutes",
+        paint: {
+          "line-color": "#00e5c8",
+          "line-width": 4,
+          "line-opacity": 0.9,
+          "line-dasharray": [1, 2],
+        },
+        layout: { "line-cap": "round" },
+      });
+
+      map.addSource("plan-zones", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: "plan-zones-layer",
+        type: "fill",
+        source: "plan-zones",
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": 0.12,
+        },
+      });
+      map.addLayer({
+        id: "plan-zones-border",
+        type: "line",
+        source: "plan-zones",
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": 2,
+          "line-opacity": 0.5,
+          "line-dasharray": [4, 4],
         },
       });
 
@@ -284,6 +346,209 @@ export default function Map({ state, layers, onIncidentClick }: MapProps) {
       }
     }
   }, [state.incidents, layers.incidents]);
+
+  // ---------- Plan Overlay ----------
+  const planMarkersRef = useRef<mapboxgl.Marker[]>([]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady.current) return;
+
+    // Clear previous plan markers
+    planMarkersRef.current.forEach((m) => m.remove());
+    planMarkersRef.current = [];
+
+    const closureSrc = map.getSource("plan-closures") as mapboxgl.GeoJSONSource | undefined;
+    const rerouteSrc = map.getSource("plan-reroutes") as mapboxgl.GeoJSONSource | undefined;
+    const zoneSrc = map.getSource("plan-zones") as mapboxgl.GeoJSONSource | undefined;
+
+    const empty: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
+
+    if (!activePlan) {
+      closureSrc?.setData(empty);
+      rerouteSrc?.setData(empty);
+      zoneSrc?.setData(empty);
+      return;
+    }
+
+    const closureFeatures: GeoJSON.Feature[] = [];
+    const rerouteFeatures: GeoJSON.Feature[] = [];
+    const zoneFeatures: GeoJSON.Feature[] = [];
+
+    // Parse plan phases for road closures and dispatch actions
+    const closedRoads = new Set<string>();
+    const dispatchLocations: { position: [number, number]; label: string }[] = [];
+
+    for (const phase of activePlan.phases || []) {
+      for (const step of phase.steps || []) {
+        const actionLower = step.action.toLowerCase();
+
+        // Detect road closures
+        if (actionLower.includes("close") || actionLower.includes("shut down") || actionLower.includes("block")) {
+          // Try to extract road names from the action text
+          for (const road of activePlan.affected_roads) {
+            closedRoads.add(road);
+          }
+        }
+
+        // Detect dispatch actions — place a marker at incident location
+        if (actionLower.includes("dispatch") || actionLower.includes("deploy") || actionLower.includes("send")) {
+          dispatchLocations.push({
+            position: activePlan.incident_position,
+            label: step.assigned_to,
+          });
+        }
+      }
+    }
+
+    // Draw closed roads
+    for (const road of closedRoads) {
+      const coords = findRoadCoords(road);
+      if (coords) {
+        closureFeatures.push({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "LineString", coordinates: coords },
+        });
+      }
+    }
+
+    // Also close roads from affected_roads
+    for (const road of activePlan.affected_roads) {
+      if (!closedRoads.has(road)) {
+        const coords = findRoadCoords(road);
+        if (coords) {
+          closureFeatures.push({
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: coords },
+          });
+        }
+      }
+    }
+
+    // Draw alternate reroute paths
+    for (const route of activePlan.alternate_routes || []) {
+      // Try to find coordinates for mentioned roads in the route description
+      const words = route.toLowerCase();
+      for (const [roadName, coords] of Object.entries(
+        // Import inline to avoid circular — just use findRoadCoords
+        {} as Record<string, [number, number][]>
+      )) {
+        // skip — we'll use a different approach
+      }
+      // Fuzzy: try to match any known road mentioned in the route string
+      const matched = findRoadCoords(route);
+      if (matched) {
+        rerouteFeatures.push({
+          type: "Feature",
+          properties: {},
+          geometry: { type: "LineString", coordinates: matched },
+        });
+      }
+    }
+
+    // Draw alert/response zone around incident
+    const [lat, lng] = activePlan.incident_position;
+    const radius = activePlan.threat_level === "CRITICAL" ? 0.008 : 0.005;
+    const zoneColor = activePlan.threat_level === "CRITICAL" ? "#ff3b4f" : "#ffaa00";
+    // Create a rough circle polygon
+    const circleCoords: [number, number][] = [];
+    for (let i = 0; i <= 32; i++) {
+      const angle = (i / 32) * Math.PI * 2;
+      circleCoords.push([
+        lng + radius * 1.3 * Math.cos(angle),
+        lat + radius * Math.sin(angle),
+      ]);
+    }
+    zoneFeatures.push({
+      type: "Feature",
+      properties: { color: zoneColor },
+      geometry: { type: "Polygon", coordinates: [circleCoords] },
+    });
+
+    // Add dispatch markers
+    const uniqueDispatches = new globalThis.Map<string, { position: [number, number]; label: string }>();
+    for (const d of dispatchLocations) {
+      if (!uniqueDispatches.has(d.label)) {
+        uniqueDispatches.set(d.label, d);
+      }
+    }
+    let offsetIdx = 0;
+    for (const [, d] of uniqueDispatches) {
+      const el = document.createElement("div");
+      el.innerHTML = `<div style="
+        background: rgba(0,200,255,0.15);
+        border: 1px solid rgba(0,200,255,0.6);
+        padding: 2px 6px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 8px;
+        color: #00c8ff;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        box-shadow: 0 0 10px rgba(0,200,255,0.2);
+      ">${d.label}</div>`;
+      // Offset each marker slightly so they don't stack
+      const offset = offsetIdx * 0.002;
+      const marker = new mapboxgl.Marker({ element: el })
+        .setLngLat([d.position[1] + offset, d.position[0] + offset * 0.5])
+        .addTo(map);
+      planMarkersRef.current.push(marker);
+      offsetIdx++;
+    }
+
+    // Add "ROAD CLOSED" labels on closure lines
+    for (const road of closedRoads) {
+      const coords = findRoadCoords(road);
+      if (coords && coords.length >= 2) {
+        const mid = coords[Math.floor(coords.length / 2)];
+        const el = document.createElement("div");
+        el.innerHTML = `<div style="
+          background: rgba(255,59,79,0.2);
+          border: 1px solid rgba(255,59,79,0.7);
+          padding: 2px 8px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 9px;
+          font-weight: 700;
+          color: #ff3b4f;
+          letter-spacing: 0.15em;
+          text-shadow: 0 0 8px rgba(255,59,79,0.5);
+        ">CLOSED</div>`;
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat(mid)
+          .addTo(map);
+        planMarkersRef.current.push(marker);
+      }
+    }
+
+    // Add "REROUTE" labels
+    for (const route of activePlan.alternate_routes || []) {
+      const coords = findRoadCoords(route);
+      if (coords && coords.length >= 2) {
+        const mid = coords[Math.floor(coords.length / 2)];
+        const el = document.createElement("div");
+        el.innerHTML = `<div style="
+          background: rgba(0,229,200,0.15);
+          border: 1px solid rgba(0,229,200,0.6);
+          padding: 2px 8px;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 8px;
+          font-weight: 600;
+          color: #00e5c8;
+          letter-spacing: 0.12em;
+        ">REROUTE →</div>`;
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat(mid)
+          .addTo(map);
+        planMarkersRef.current.push(marker);
+      }
+    }
+
+    closureSrc?.setData({ type: "FeatureCollection", features: closureFeatures });
+    rerouteSrc?.setData({ type: "FeatureCollection", features: rerouteFeatures });
+    zoneSrc?.setData({ type: "FeatureCollection", features: zoneFeatures });
+  }, [activePlan]);
 
   return (
     <div

@@ -16,7 +16,8 @@ export function useCityState() {
   const [feed, setFeed] = useState<CityEvent[]>([]);
 
   const handleEvent = useCallback((data: any) => {
-    if (data.type === "snapshot") {
+    // Snapshot: has traffic/incidents keys but no "type" field, or type === "snapshot"
+    if (data.type === "snapshot" || (!data.type && data.traffic !== undefined)) {
       setState({
         traffic: data.traffic ?? null,
         transit: data.transit ?? null,

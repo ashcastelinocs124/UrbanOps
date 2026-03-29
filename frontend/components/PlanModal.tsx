@@ -33,6 +33,7 @@ interface PlanModalProps {
   incident: IncidentEvent;
   onClose: () => void;
   onExecute: (plan: Plan) => void;
+  onPlanGenerated?: (plan: Plan) => void;
   analystUrl: string;
 }
 
@@ -50,7 +51,7 @@ const PRIORITY_DOT: Record<string, string> = {
   low: "bg-[var(--cyan)]",
 };
 
-export default function PlanModal({ incident, onClose, onExecute, analystUrl }: PlanModalProps) {
+export default function PlanModal({ incident, onClose, onExecute, onPlanGenerated, analystUrl }: PlanModalProps) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +69,7 @@ export default function PlanModal({ incident, onClose, onExecute, analystUrl }: 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setPlan(data);
+      onPlanGenerated?.(data);
     } catch (e: any) {
       setError(e.message || "Failed to generate plan");
     } finally {

@@ -86,6 +86,31 @@ export interface RecommendationEvent {
 
 export type CityEvent = TrafficEvent | TransitEvent | IncidentEvent | WeatherEvent | RecommendationEvent;
 
+export interface PlanStep {
+  step: number;
+  action: string;
+  assigned_to: string;
+  priority: string;
+}
+
+export interface PlanPhase {
+  phase: number;
+  name: string;
+  duration: string;
+  steps: PlanStep[];
+}
+
+export interface ActivePlan {
+  incident_id: string;
+  incident_position: [number, number];
+  threat_level: string;
+  phases: PlanPhase[];
+  alternate_routes: string[];
+  resources_required: string[];
+  affected_roads: string[];
+  communications: string[];
+}
+
 export interface CityState {
   traffic: TrafficEvent | null;
   transit: TransitEvent | null;
